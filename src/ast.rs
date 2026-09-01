@@ -36,6 +36,10 @@ pub fn parse_items(extension: &str, source: &str) -> Vec<CodeItem> {
         "js" | "jsx" | "mjs" | "cjs" => parse_javascript_items(source),
         "py" => parse_python_items(source),
         "cs" => parse_csharp_items(source),
+        "go" => parse_go_items(source),
+        "java" => parse_java_items(source),
+        "c" | "h" => parse_c_items(source),
+        "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" => parse_cpp_items(source),
         _ => Vec::new(),
     }
 }
@@ -189,6 +193,15 @@ where
                 | "abstract_class_declaration"
                 | "class_definition"
                 | "struct_declaration"
+                | "class_specifier"
+                | "struct_specifier"
+                | "union_specifier"
+                | "enum_specifier"
+                | "interface_declaration"
+                | "enum_declaration"
+                | "record_declaration"
+                | "namespace_definition"
+                | "type_declaration"
         ) {
             collect_method_ranges(child, is_method, out);
         }
@@ -217,6 +230,21 @@ fn is_csharp_method(kind: &str) -> bool {
             | "destructor_declaration"
             | "local_function_statement"
     )
+}
+
+fn is_java_method(kind: &str) -> bool {
+    matches!(
+        kind,
+        "method_declaration" | "constructor_declaration" | "compact_constructor_declaration"
+    )
+}
+
+fn is_c_method(kind: &str) -> bool {
+    matches!(kind, "function_definition")
+}
+
+fn is_cpp_method(kind: &str) -> bool {
+    matches!(kind, "function_definition")
 }
 
 pub fn parse_typescript_items(source: &str, is_tsx: bool) -> Vec<CodeItem> {
@@ -603,6 +631,428 @@ fn visit_csharp_node(
     }
 }
 
+pub fn parse_go_items(source: &str) -> Vec<CodeItem> {
+    let language: Language = tree_sitter_go::LANGUAGE.into();
+    parse_tree_sitter_ast(language, source, |root, src, out| {
+        visit_go_node(root, src, None, out);
+    })
+}
+
+fn extract_go_receiver_type<'a>(receiver_node: Node, source: &'a str) -> Option<&'a str> {
+    fn find_type_ident<'a>(node: Node, source: &'a str) -> Option<&'a str> {
+        if node.kind() == "type_identifier" {
+            return Some(&source[node.byte_range()]);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(res) = find_type_ident(child, source) {
+                return Some(res);
+            }
+        }
+        None
+    }
+    find_type_ident(receiver_node, source)
+}
+
+fn visit_go_node(node: Node, source: &str, parent_class: Option<&str>, out: &mut Vec<CodeItem>) {
+    match node.kind() {
+        "type_declaration" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "type_spec" {
+                    if let Some(name_node) = child.child_by_field_name("name") {
+                        let name = &source[name_node.byte_range()];
+                        out.push(CodeItem {
+                            name: name.to_string(),
+                            kind: CodeItemKind::Class,
+                            line: Some(child.start_position().row + 1),
+                            tokens: source[child.byte_range()]
+                                .split_whitespace()
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                            parent: parent_class.map(String::from),
+                        });
+                    }
+                }
+            }
+            return;
+        }
+        "type_spec" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = &source[name_node.byte_range()];
+                out.push(CodeItem {
+                    name: name.to_string(),
+                    kind: CodeItemKind::Class,
+                    line: Some(node.start_position().row + 1),
+                    tokens: source[node.byte_range()]
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                    parent: parent_class.map(String::from),
+                });
+            }
+            return;
+        }
+        "function_declaration" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = &source[name_node.byte_range()];
+                out.push(CodeItem {
+                    name: name.to_string(),
+                    kind: CodeItemKind::Function,
+                    line: Some(node.start_position().row + 1),
+                    tokens: source[node.byte_range()].to_string(),
+                    parent: parent_class.map(String::from),
+                });
+            }
+            return;
+        }
+        "method_declaration" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = &source[name_node.byte_range()];
+                let parent = node
+                    .child_by_field_name("receiver")
+                    .and_then(|recv| extract_go_receiver_type(recv, source))
+                    .map(String::from)
+                    .or_else(|| parent_class.map(String::from));
+                out.push(CodeItem {
+                    name: name.to_string(),
+                    kind: CodeItemKind::Function,
+                    line: Some(node.start_position().row + 1),
+                    tokens: source[node.byte_range()].to_string(),
+                    parent,
+                });
+            }
+            return;
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        visit_go_node(child, source, parent_class, out);
+    }
+}
+
+pub fn parse_java_items(source: &str) -> Vec<CodeItem> {
+    let language: Language = tree_sitter_java::LANGUAGE.into();
+    parse_tree_sitter_ast(language, source, |root, src, out| {
+        visit_java_node(root, src, None, out);
+    })
+}
+
+fn visit_java_node(node: Node, source: &str, parent_class: Option<&str>, out: &mut Vec<CodeItem>) {
+    match node.kind() {
+        "class_declaration"
+        | "interface_declaration"
+        | "enum_declaration"
+        | "record_declaration"
+        | "annotation_type_declaration" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = &source[name_node.byte_range()];
+                out.push(CodeItem {
+                    name: name.to_string(),
+                    kind: CodeItemKind::Class,
+                    line: Some(node.start_position().row + 1),
+                    tokens: extract_class_tokens(node, source, is_java_method),
+                    parent: parent_class.map(String::from),
+                });
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut cursor = body.walk();
+                    for child in body.children(&mut cursor) {
+                        visit_java_node(child, source, Some(name), out);
+                    }
+                } else {
+                    let mut cursor = node.walk();
+                    for child in node.children(&mut cursor) {
+                        if child.id() != name_node.id() {
+                            visit_java_node(child, source, Some(name), out);
+                        }
+                    }
+                }
+                return;
+            }
+        }
+        "method_declaration" | "constructor_declaration" | "compact_constructor_declaration" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = &source[name_node.byte_range()];
+                out.push(CodeItem {
+                    name: name.to_string(),
+                    kind: CodeItemKind::Function,
+                    line: Some(node.start_position().row + 1),
+                    tokens: source[node.byte_range()].to_string(),
+                    parent: parent_class.map(String::from),
+                });
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut cursor = body.walk();
+                    for child in body.children(&mut cursor) {
+                        visit_java_node(child, source, parent_class, out);
+                    }
+                }
+                return;
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        visit_java_node(child, source, parent_class, out);
+    }
+}
+
+pub fn parse_c_items(source: &str) -> Vec<CodeItem> {
+    let language: Language = tree_sitter_c::LANGUAGE.into();
+    parse_tree_sitter_ast(language, source, |root, src, out| {
+        visit_c_node(root, src, None, out);
+    })
+}
+
+fn extract_c_declarator_name<'a>(node: Node, source: &'a str) -> Option<&'a str> {
+    match node.kind() {
+        "identifier" | "field_identifier" | "type_identifier" => Some(&source[node.byte_range()]),
+        _ => {
+            if let Some(decl) = node.child_by_field_name("declarator") {
+                extract_c_declarator_name(decl, source)
+            } else {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if let Some(name) = extract_c_declarator_name(child, source) {
+                        return Some(name);
+                    }
+                }
+                None
+            }
+        }
+    }
+}
+
+fn visit_c_node(node: Node, source: &str, parent_class: Option<&str>, out: &mut Vec<CodeItem>) {
+    match node.kind() {
+        "struct_specifier" | "union_specifier" | "enum_specifier" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = &source[name_node.byte_range()];
+                if !name.is_empty() {
+                    out.push(CodeItem {
+                        name: name.to_string(),
+                        kind: CodeItemKind::Class,
+                        line: Some(node.start_position().row + 1),
+                        tokens: extract_class_tokens(node, source, is_c_method),
+                        parent: parent_class.map(String::from),
+                    });
+                    if let Some(body) = node.child_by_field_name("body") {
+                        let mut cursor = body.walk();
+                        for child in body.children(&mut cursor) {
+                            visit_c_node(child, source, Some(name), out);
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+        "type_definition" => {
+            if let Some(decl_node) = node.child_by_field_name("declarator") {
+                if let Some(name) = extract_c_declarator_name(decl_node, source) {
+                    out.push(CodeItem {
+                        name: name.to_string(),
+                        kind: CodeItemKind::Class,
+                        line: Some(node.start_position().row + 1),
+                        tokens: source[node.byte_range()]
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                        parent: parent_class.map(String::from),
+                    });
+                    return;
+                }
+            }
+        }
+        "function_definition" => {
+            if let Some(decl_node) = node.child_by_field_name("declarator") {
+                if let Some(name) = extract_c_declarator_name(decl_node, source) {
+                    out.push(CodeItem {
+                        name: name.to_string(),
+                        kind: CodeItemKind::Function,
+                        line: Some(node.start_position().row + 1),
+                        tokens: source[node.byte_range()].to_string(),
+                        parent: parent_class.map(String::from),
+                    });
+                    if let Some(body) = node.child_by_field_name("body") {
+                        let mut cursor = body.walk();
+                        for child in body.children(&mut cursor) {
+                            visit_c_node(child, source, parent_class, out);
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        visit_c_node(child, source, parent_class, out);
+    }
+}
+
+pub fn parse_cpp_items(source: &str) -> Vec<CodeItem> {
+    let language: Language = tree_sitter_cpp::LANGUAGE.into();
+    parse_tree_sitter_ast(language, source, |root, src, out| {
+        visit_cpp_node(root, src, None, out);
+    })
+}
+
+fn extract_cpp_declarator_info<'a>(
+    node: Node,
+    source: &'a str,
+) -> (Option<&'a str>, Option<&'a str>) {
+    match node.kind() {
+        "identifier" | "field_identifier" | "type_identifier" | "destructor_name"
+        | "operator_name" => (Some(&source[node.byte_range()]), None),
+        "qualified_identifier" => {
+            let mut current = node;
+            let mut last_scope = None;
+            while current.kind() == "qualified_identifier" {
+                if let Some(scope_node) = current.child_by_field_name("scope") {
+                    let scope_text = &source[scope_node.byte_range()];
+                    last_scope = scope_text.split("::").last();
+                }
+                if let Some(name_node) = current.child_by_field_name("name") {
+                    if name_node.kind() == "qualified_identifier" {
+                        current = name_node;
+                    } else {
+                        return (Some(&source[name_node.byte_range()]), last_scope);
+                    }
+                } else {
+                    break;
+                }
+            }
+            (Some(&source[current.byte_range()]), last_scope)
+        }
+        _ => {
+            if let Some(decl) = node.child_by_field_name("declarator") {
+                extract_cpp_declarator_info(decl, source)
+            } else {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    let (name, scope) = extract_cpp_declarator_info(child, source);
+                    if name.is_some() {
+                        return (name, scope);
+                    }
+                }
+                (None, None)
+            }
+        }
+    }
+}
+
+fn visit_cpp_node(node: Node, source: &str, parent_class: Option<&str>, out: &mut Vec<CodeItem>) {
+    match node.kind() {
+        "class_specifier" | "struct_specifier" | "union_specifier" | "enum_specifier" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = &source[name_node.byte_range()];
+                if !name.is_empty() {
+                    out.push(CodeItem {
+                        name: name.to_string(),
+                        kind: CodeItemKind::Class,
+                        line: Some(node.start_position().row + 1),
+                        tokens: extract_class_tokens(node, source, is_cpp_method),
+                        parent: parent_class.map(String::from),
+                    });
+                    if let Some(body) = node.child_by_field_name("body") {
+                        let mut cursor = body.walk();
+                        for child in body.children(&mut cursor) {
+                            visit_cpp_node(child, source, Some(name), out);
+                        }
+                    } else {
+                        let mut cursor = node.walk();
+                        for child in node.children(&mut cursor) {
+                            if child.id() != name_node.id() {
+                                visit_cpp_node(child, source, Some(name), out);
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+        "namespace_definition" => {
+            let name_opt = node
+                .child_by_field_name("name")
+                .map(|n| &source[n.byte_range()]);
+            if let Some(name) = name_opt {
+                out.push(CodeItem {
+                    name: name.to_string(),
+                    kind: CodeItemKind::Class,
+                    line: Some(node.start_position().row + 1),
+                    tokens: extract_class_tokens(node, source, is_cpp_method),
+                    parent: parent_class.map(String::from),
+                });
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut cursor = body.walk();
+                    for child in body.children(&mut cursor) {
+                        visit_cpp_node(child, source, Some(name), out);
+                    }
+                } else {
+                    let mut cursor = node.walk();
+                    for child in node.children(&mut cursor) {
+                        visit_cpp_node(child, source, Some(name), out);
+                    }
+                }
+                return;
+            }
+        }
+        "type_definition" => {
+            if let Some(decl_node) = node.child_by_field_name("declarator") {
+                let (name_opt, _) = extract_cpp_declarator_info(decl_node, source);
+                if let Some(name) = name_opt {
+                    out.push(CodeItem {
+                        name: name.to_string(),
+                        kind: CodeItemKind::Class,
+                        line: Some(node.start_position().row + 1),
+                        tokens: source[node.byte_range()]
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                        parent: parent_class.map(String::from),
+                    });
+                    return;
+                }
+            }
+        }
+        "function_definition" => {
+            if let Some(decl_node) = node.child_by_field_name("declarator") {
+                let (name_opt, scope_opt) = extract_cpp_declarator_info(decl_node, source);
+                if let Some(name) = name_opt {
+                    let parent = parent_class
+                        .map(String::from)
+                        .or_else(|| scope_opt.map(String::from));
+                    out.push(CodeItem {
+                        name: name.to_string(),
+                        kind: CodeItemKind::Function,
+                        line: Some(node.start_position().row + 1),
+                        tokens: source[node.byte_range()].to_string(),
+                        parent,
+                    });
+                    if let Some(body) = node.child_by_field_name("body") {
+                        let mut cursor = body.walk();
+                        for child in body.children(&mut cursor) {
+                            visit_cpp_node(child, source, parent_class, out);
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        visit_cpp_node(child, source, parent_class, out);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,5 +1271,159 @@ namespace MyApp.Services
 
         assert_eq!(items[3].name, "IOrderService");
         assert_eq!(items[3].kind, CodeItemKind::Class);
+    }
+
+    #[test]
+    fn test_parse_go_items() {
+        let go_code = r#"
+package service
+
+type Config struct {
+    Port int
+}
+
+type Processor interface {
+    Process() error
+}
+
+func InitConfig() *Config {
+    return &Config{Port: 8080}
+}
+
+func (c *Config) GetPort() int {
+    return c.Port
+}
+"#;
+        let items = parse_go_items(go_code);
+        assert_eq!(items.len(), 4);
+
+        assert_eq!(items[0].name, "Config");
+        assert_eq!(items[0].kind, CodeItemKind::Class);
+
+        assert_eq!(items[1].name, "Processor");
+        assert_eq!(items[1].kind, CodeItemKind::Class);
+
+        assert_eq!(items[2].name, "InitConfig");
+        assert_eq!(items[2].kind, CodeItemKind::Function);
+        assert!(items[2].parent.is_none());
+
+        assert_eq!(items[3].name, "GetPort");
+        assert_eq!(items[3].kind, CodeItemKind::Function);
+        assert_eq!(items[3].parent.as_deref(), Some("Config"));
+    }
+
+    #[test]
+    fn test_parse_java_items() {
+        let java_code = r#"
+package com.example;
+
+public class OrderService {
+    public OrderService() {}
+
+    public boolean placeOrder(int id) {
+        return true;
+    }
+}
+
+public interface IHandler {
+    void handle();
+}
+
+public record Point(int x, int y) {}
+"#;
+        let items = parse_java_items(java_code);
+        assert_eq!(items.len(), 6);
+
+        assert_eq!(items[0].name, "OrderService");
+        assert_eq!(items[0].kind, CodeItemKind::Class);
+
+        assert_eq!(items[1].name, "OrderService");
+        assert_eq!(items[1].kind, CodeItemKind::Function);
+        assert_eq!(items[1].parent.as_deref(), Some("OrderService"));
+
+        assert_eq!(items[2].name, "placeOrder");
+        assert_eq!(items[2].kind, CodeItemKind::Function);
+        assert_eq!(items[2].parent.as_deref(), Some("OrderService"));
+
+        assert_eq!(items[3].name, "IHandler");
+        assert_eq!(items[3].kind, CodeItemKind::Class);
+
+        assert_eq!(items[4].name, "handle");
+        assert_eq!(items[4].kind, CodeItemKind::Function);
+        assert_eq!(items[4].parent.as_deref(), Some("IHandler"));
+
+        assert_eq!(items[5].name, "Point");
+        assert_eq!(items[5].kind, CodeItemKind::Class);
+    }
+
+    #[test]
+    fn test_parse_c_items() {
+        let c_code = r#"
+struct Vector {
+    float x;
+    float y;
+};
+
+enum Status {
+    OK = 0,
+    ERROR = 1
+};
+
+int calculate_sum(int a, int b) {
+    return a + b;
+}
+"#;
+        let items = parse_c_items(c_code);
+        assert_eq!(items.len(), 3);
+
+        assert_eq!(items[0].name, "Vector");
+        assert_eq!(items[0].kind, CodeItemKind::Class);
+
+        assert_eq!(items[1].name, "Status");
+        assert_eq!(items[1].kind, CodeItemKind::Class);
+
+        assert_eq!(items[2].name, "calculate_sum");
+        assert_eq!(items[2].kind, CodeItemKind::Function);
+    }
+
+    #[test]
+    fn test_parse_cpp_items() {
+        let cpp_code = r#"
+namespace Math {
+    struct Vector3 {
+        float x, y, z;
+    };
+
+    class Calculator {
+    public:
+        int add(int a, int b) {
+            return a + b;
+        }
+    };
+}
+
+int Math::Calculator::subtract(int a, int b) {
+    return a - b;
+}
+"#;
+        let items = parse_cpp_items(cpp_code);
+        assert_eq!(items.len(), 5);
+
+        assert_eq!(items[0].name, "Math");
+        assert_eq!(items[0].kind, CodeItemKind::Class);
+
+        assert_eq!(items[1].name, "Vector3");
+        assert_eq!(items[1].kind, CodeItemKind::Class);
+
+        assert_eq!(items[2].name, "Calculator");
+        assert_eq!(items[2].kind, CodeItemKind::Class);
+
+        assert_eq!(items[3].name, "add");
+        assert_eq!(items[3].kind, CodeItemKind::Function);
+        assert_eq!(items[3].parent.as_deref(), Some("Calculator"));
+
+        assert_eq!(items[4].name, "subtract");
+        assert_eq!(items[4].kind, CodeItemKind::Function);
+        assert_eq!(items[4].parent.as_deref(), Some("Calculator"));
     }
 }
