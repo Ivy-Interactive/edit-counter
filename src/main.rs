@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use edit_counter::{analyze_paths, diff_repository, open_repository, EditReport};
+use edit_counter::{analyze_paths, diff_repository, open_repository, DiffConfig, EditReport};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -15,6 +15,18 @@ struct Cli {
     /// Path to file or directory to inspect (defaults to current directory)
     #[arg(short, long, global = true)]
     path: Option<PathBuf>,
+
+    /// Enable rename detection in git diffs
+    #[arg(long, global = true)]
+    find_renames: bool,
+
+    /// Similarity threshold for rename detection (0-100)
+    #[arg(long, global = true)]
+    rename_threshold: Option<u32>,
+
+    /// Ignore patterns for files or directories (e.g. vendor/, *.min.js)
+    #[arg(short, long = "ignore", global = true)]
+    ignore: Vec<String>,
 
     /// Output results as JSON
     #[arg(long, global = true)]
@@ -43,9 +55,15 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
+    let diff_config = DiffConfig {
+        find_renames: cli.find_renames,
+        rename_threshold: cli.rename_threshold,
+        ignore_patterns: cli.ignore.clone(),
+    };
+
     let report = match &cli.command {
         Some(Commands::Diff { base, target }) => match open_repository(cli.path.as_deref()) {
-            Ok(repo) => match diff_repository(&repo, base, target.as_deref()) {
+            Ok(repo) => match diff_repository(&repo, base, target.as_deref(), Some(&diff_config)) {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("Error computing diff: {}", e);
@@ -72,8 +90,8 @@ fn main() {
             }
         }
         Some(Commands::Summary) | None => match open_repository(cli.path.as_deref()) {
-            Ok(repo) => diff_repository(&repo, "HEAD~1", None)
-                .or_else(|_| diff_repository(&repo, "HEAD", None))
+            Ok(repo) => diff_repository(&repo, "HEAD~1", None, Some(&diff_config))
+                .or_else(|_| diff_repository(&repo, "HEAD", None, Some(&diff_config)))
                 .unwrap_or_default(),
             Err(_) => {
                 eprintln!("Edit Counter v{}", env!("CARGO_PKG_VERSION"));
