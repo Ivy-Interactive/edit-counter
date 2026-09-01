@@ -631,3 +631,121 @@ int helper() { return 0; }
     assert_eq!(report.functions_added, 2);
     assert_eq!(report.total_edits, 4);
 }
+
+#[test]
+fn test_git_diff_ruby_feature() {
+    let (_tmp, repo) = init_test_repo();
+
+    let c1_oid = commit_file(
+        &repo,
+        "Gemfile",
+        Some("source 'https://rubygems.org'\n"),
+        "Initial",
+        &[],
+    );
+    let c1 = repo.find_commit(c1_oid).expect("Find c1");
+
+    let rb_code = r#"
+class PaymentGateway
+  def initialize(key)
+    @key = key
+  end
+
+  def charge(amount)
+    true
+  end
+end
+"#;
+    let c2_oid = commit_file(
+        &repo,
+        "lib/payment.rb",
+        Some(rb_code),
+        "Add payment gateway",
+        &[&c1],
+    );
+
+    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()), None)
+        .expect("diff_repository failed");
+
+    assert_eq!(report.files_added, 1);
+    assert_eq!(report.classes_added, 1);
+    assert_eq!(report.functions_added, 2);
+    assert_eq!(report.total_edits, 4);
+}
+
+#[test]
+fn test_git_diff_php_feature() {
+    let (_tmp, repo) = init_test_repo();
+
+    let c1_oid = commit_file(
+        &repo,
+        "composer.json",
+        Some("{\"name\": \"app/pkg\"}"),
+        "Initial",
+        &[],
+    );
+    let c1 = repo.find_commit(c1_oid).expect("Find c1");
+
+    let php_code = r#"<?php
+namespace App;
+
+class SessionManager {
+    public function start() {}
+    public function destroy() {}
+}
+"#;
+    let c2_oid = commit_file(
+        &repo,
+        "src/SessionManager.php",
+        Some(php_code),
+        "Add session manager",
+        &[&c1],
+    );
+
+    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()), None)
+        .expect("diff_repository failed");
+
+    assert_eq!(report.files_added, 1);
+    assert_eq!(report.classes_added, 1);
+    assert_eq!(report.functions_added, 2);
+    assert_eq!(report.total_edits, 4);
+}
+
+#[test]
+fn test_git_diff_swift_feature() {
+    let (_tmp, repo) = init_test_repo();
+
+    let c1_oid = commit_file(
+        &repo,
+        "Package.swift",
+        Some("// swift-tools-version:5.9"),
+        "Initial",
+        &[],
+    );
+    let c1 = repo.find_commit(c1_oid).expect("Find c1");
+
+    let swift_code = r#"
+struct Config {
+    var host: String
+}
+
+class ApiClient {
+    func request() {}
+}
+"#;
+    let c2_oid = commit_file(
+        &repo,
+        "Sources/ApiClient.swift",
+        Some(swift_code),
+        "Add api client",
+        &[&c1],
+    );
+
+    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()), None)
+        .expect("diff_repository failed");
+
+    assert_eq!(report.files_added, 1);
+    assert_eq!(report.classes_added, 2);
+    assert_eq!(report.functions_added, 1);
+    assert_eq!(report.total_edits, 4);
+}

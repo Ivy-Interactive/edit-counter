@@ -417,4 +417,112 @@ public:
         assert_eq!(events[2].kind, EditKind::FunctionModified);
         assert_eq!(events[2].symbol.as_deref(), Some("start"));
     }
+
+    #[test]
+    fn test_analyze_ruby_file_diff() {
+        let old_ruby = r#"
+class PaymentGateway
+  def charge(amount)
+    puts "charge #{amount}"
+  end
+end
+"#;
+        let new_ruby = r#"
+class PaymentGateway
+  def charge(amount)
+    puts "charge v2 #{amount}"
+  end
+
+  def refund(amount)
+    puts "refund #{amount}"
+  end
+end
+"#;
+        let events = analyze_file_diff(
+            Path::new("lib/payment_gateway.rb"),
+            Some(old_ruby),
+            Some(new_ruby),
+        );
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].kind, EditKind::FileModified);
+        assert_eq!(events[1].kind, EditKind::FunctionModified);
+        assert_eq!(events[1].symbol.as_deref(), Some("charge"));
+        assert_eq!(events[2].kind, EditKind::FunctionAdded);
+        assert_eq!(events[2].symbol.as_deref(), Some("refund"));
+    }
+
+    #[test]
+    fn test_analyze_php_file_diff() {
+        let old_php = r#"<?php
+class AuthService {
+    public function login() {
+        return true;
+    }
+}
+"#;
+        let new_php = r#"<?php
+class AuthService {
+    public function login() {
+        return false;
+    }
+}
+
+function verify_token() {
+    return true;
+}
+"#;
+        let events = analyze_file_diff(
+            Path::new("src/AuthService.php"),
+            Some(old_php),
+            Some(new_php),
+        );
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].kind, EditKind::FileModified);
+        assert_eq!(events[1].kind, EditKind::FunctionModified);
+        assert_eq!(events[1].symbol.as_deref(), Some("login"));
+        assert_eq!(events[2].kind, EditKind::FunctionAdded);
+        assert_eq!(events[2].symbol.as_deref(), Some("verify_token"));
+    }
+
+    #[test]
+    fn test_analyze_swift_file_diff() {
+        let old_swift = r#"
+struct Configuration {
+    var timeout: Int
+}
+
+class NetworkClient {
+    func connect() {
+        print("connecting")
+    }
+}
+"#;
+        let new_swift = r#"
+struct Configuration {
+    var timeout: Int
+    var retries: Int
+}
+
+class NetworkClient {
+    func connect() {
+        print("connecting v2")
+    }
+}
+
+actor ConnectionPool {}
+"#;
+        let events = analyze_file_diff(
+            Path::new("Sources/Client.swift"),
+            Some(old_swift),
+            Some(new_swift),
+        );
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].kind, EditKind::FileModified);
+        assert_eq!(events[1].kind, EditKind::ClassModified);
+        assert_eq!(events[1].symbol.as_deref(), Some("Configuration"));
+        assert_eq!(events[2].kind, EditKind::FunctionModified);
+        assert_eq!(events[2].symbol.as_deref(), Some("connect"));
+        assert_eq!(events[3].kind, EditKind::ClassAdded);
+        assert_eq!(events[3].symbol.as_deref(), Some("ConnectionPool"));
+    }
 }

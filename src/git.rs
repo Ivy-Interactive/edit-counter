@@ -231,7 +231,33 @@ fn is_supported_file(path: &Path) -> bool {
         .map(|ext| {
             matches!(
                 ext.to_ascii_lowercase().as_str(),
-                "rs" | "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "py" | "cs"
+                "rs" | "ts"
+                    | "tsx"
+                    | "mts"
+                    | "cts"
+                    | "js"
+                    | "jsx"
+                    | "mjs"
+                    | "cjs"
+                    | "py"
+                    | "cs"
+                    | "go"
+                    | "java"
+                    | "c"
+                    | "h"
+                    | "cpp"
+                    | "cc"
+                    | "cxx"
+                    | "hpp"
+                    | "hh"
+                    | "hxx"
+                    | "rb"
+                    | "rake"
+                    | "gemspec"
+                    | "ru"
+                    | "php"
+                    | "phtml"
+                    | "swift"
             )
         })
         .unwrap_or(false)
