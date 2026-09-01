@@ -1,4 +1,4 @@
-use crate::ast::{parse_rust_items, CodeItem, CodeItemKind};
+use crate::ast::{parse_items_for_path, CodeItem, CodeItemKind};
 use crate::models::{EditEvent, EditKind};
 use std::path::Path;
 
@@ -91,7 +91,7 @@ pub fn analyze_file_diff(
                 line: None,
             });
 
-            let items = parse_rust_items(new_text);
+            let items = parse_items_for_path(file_path, new_text);
             for item in items {
                 let kind = match item.kind {
                     CodeItemKind::Class => EditKind::ClassAdded,
@@ -114,7 +114,7 @@ pub fn analyze_file_diff(
                 line: None,
             });
 
-            let items = parse_rust_items(old_text);
+            let items = parse_items_for_path(file_path, old_text);
             for item in items {
                 let kind = match item.kind {
                     CodeItemKind::Class => EditKind::ClassDeleted,
@@ -142,8 +142,8 @@ pub fn analyze_file_diff(
                 line: None,
             });
 
-            let old_items = parse_rust_items(old_text);
-            let new_items = parse_rust_items(new_text);
+            let old_items = parse_items_for_path(file_path, old_text);
+            let new_items = parse_items_for_path(file_path, new_text);
 
             let item_events = compare_items(file_path, &old_items, &new_items);
             events.extend(item_events);
@@ -246,5 +246,70 @@ pub fn draw_widget() {}
         let code = "pub fn foo() {}";
         let events = analyze_file_diff(Path::new("src/lib.rs"), Some(code), Some(code));
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_analyze_typescript_file_diff() {
+        let old_ts = r#"
+export class Router {
+    navigate(to: string) {
+        console.log(to);
+    }
+}
+"#;
+        let new_ts = r#"
+export class Router {
+    navigate(to: string) {
+        window.location.href = to;
+    }
+    back() {
+        window.history.back();
+    }
+}
+"#;
+        let events = analyze_file_diff(Path::new("src/router.ts"), Some(old_ts), Some(new_ts));
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].kind, EditKind::FileModified);
+        assert_eq!(events[1].kind, EditKind::FunctionModified);
+        assert_eq!(events[1].symbol.as_deref(), Some("navigate"));
+        assert_eq!(events[2].kind, EditKind::FunctionAdded);
+        assert_eq!(events[2].symbol.as_deref(), Some("back"));
+    }
+
+    #[test]
+    fn test_analyze_python_file_diff() {
+        let old_py = r#"
+class Worker:
+    def execute(self):
+        print("old")
+"#;
+        let new_py = r#"
+class Worker:
+    def execute(self):
+        print("new")
+"#;
+        let events = analyze_file_diff(Path::new("app/worker.py"), Some(old_py), Some(new_py));
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, EditKind::FileModified);
+        assert_eq!(events[1].kind, EditKind::FunctionModified);
+        assert_eq!(events[1].symbol.as_deref(), Some("execute"));
+    }
+
+    #[test]
+    fn test_analyze_csharp_file_diff() {
+        let cs_code = r#"
+public class PaymentGateway
+{
+    public void Charge() {}
+}
+"#;
+        let events =
+            analyze_file_diff(Path::new("Services/PaymentGateway.cs"), None, Some(cs_code));
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].kind, EditKind::FileAdded);
+        assert_eq!(events[1].kind, EditKind::ClassAdded);
+        assert_eq!(events[1].symbol.as_deref(), Some("PaymentGateway"));
+        assert_eq!(events[2].kind, EditKind::FunctionAdded);
+        assert_eq!(events[2].symbol.as_deref(), Some("Charge"));
     }
 }
