@@ -391,3 +391,133 @@ fn test_git_diff_ignore_filters_exclude_vendored_and_generated_files() {
     assert_eq!(report.events[1].kind, EditKind::FunctionAdded);
     assert_eq!(report.events[1].symbol.as_deref(), Some("run"));
 }
+
+#[test]
+fn test_git_diff_typescript_feature() {
+    let (_tmp, repo) = init_test_repo();
+
+    let c1_oid = commit_file(
+        &repo,
+        "package.json",
+        Some("{\"name\": \"my-app\"}"),
+        "Initial commit",
+        &[],
+    );
+    let c1 = repo.find_commit(c1_oid).expect("Find c1");
+
+    let ts_code = r#"
+export interface UserDTO {
+    id: string;
+}
+
+export class UserService {
+    fetchUser(id: string): UserDTO {
+        return { id };
+    }
+}
+"#;
+    let c2_oid = commit_file(
+        &repo,
+        "src/user.ts",
+        Some(ts_code),
+        "Add user service",
+        &[&c1],
+    );
+
+    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()), None)
+        .expect("diff_repository failed");
+
+    assert_eq!(report.files_added, 1);
+    assert_eq!(report.classes_added, 2); // UserDTO, UserService
+    assert_eq!(report.functions_added, 1); // fetchUser
+    assert_eq!(report.total_edits, 4);
+}
+
+#[test]
+fn test_git_diff_python_refactor() {
+    let (_tmp, repo) = init_test_repo();
+
+    let py_code_v1 = r#"
+class TaskRunner:
+    def run(self):
+        print("v1")
+"#;
+    let c1_oid = commit_file(&repo, "tasks.py", Some(py_code_v1), "Initial runner", &[]);
+    let c1 = repo.find_commit(c1_oid).expect("Find c1");
+
+    let py_code_v2 = r#"
+class TaskRunner:
+    def run(self):
+        print("v2")
+
+    def cancel(self):
+        pass
+"#;
+    let c2_oid = commit_file(&repo, "tasks.py", Some(py_code_v2), "Update runner", &[&c1]);
+
+    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()), None)
+        .expect("diff_repository failed");
+
+    assert_eq!(report.files_modified, 1);
+    assert_eq!(report.functions_modified, 1);
+    assert_eq!(report.functions_added, 1);
+}
+
+#[test]
+fn test_git_diff_csharp_feature() {
+    let (_tmp, repo) = init_test_repo();
+
+    let c1_oid = commit_file(&repo, "App.sln", Some(""), "Initial solution", &[]);
+    let c1 = repo.find_commit(c1_oid).expect("Find c1");
+
+    let cs_code = r#"
+namespace MyApp
+{
+    public class OrderController
+    {
+        public OrderController() {}
+        public void Process() {}
+    }
+}
+"#;
+    let c2_oid = commit_file(
+        &repo,
+        "Controllers/OrderController.cs",
+        Some(cs_code),
+        "Add OrderController",
+        &[&c1],
+    );
+
+    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()), None)
+        .expect("diff_repository failed");
+
+    assert_eq!(report.files_added, 1);
+    assert_eq!(report.classes_added, 1);
+    assert_eq!(report.functions_added, 2); // constructor + method
+    assert_eq!(report.total_edits, 4);
+}
+
+#[test]
+fn test_git_diff_javascript_feature() {
+    let (_tmp, repo) = init_test_repo();
+
+    let c1_oid = commit_file(&repo, "package.json", Some("{}"), "Initial", &[]);
+    let c1 = repo.find_commit(c1_oid).expect("Find c1");
+
+    let js_code = r#"
+class AuthHelper {
+    login() {}
+}
+
+const check = () => true;
+"#;
+    let c2_oid = commit_file(&repo, "auth.js", Some(js_code), "Add auth", &[&c1]);
+
+    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()), None)
+        .expect("diff_repository failed");
+
+    assert_eq!(report.files_added, 1);
+    assert_eq!(report.classes_added, 1);
+    assert_eq!(report.functions_added, 2);
+    assert_eq!(report.total_edits, 4);
+}

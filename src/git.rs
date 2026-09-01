@@ -225,14 +225,24 @@ pub fn diff_repository(
     Ok(report)
 }
 
+fn is_supported_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "rs" | "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" | "py" | "cs"
+            )
+        })
+        .unwrap_or(false)
+}
+
 pub fn analyze_paths(paths: &[PathBuf]) -> Result<EditReport, Box<dyn Error>> {
     let mut report = EditReport::default();
     for p in paths {
         if p.is_dir() {
             for entry in walkdir::WalkDir::new(p).into_iter().filter_map(|e| e.ok()) {
-                if entry.file_type().is_file()
-                    && entry.path().extension().and_then(|ext| ext.to_str()) == Some("rs")
-                {
+                if entry.file_type().is_file() && is_supported_file(entry.path()) {
                     if let Ok(content) = std::fs::read_to_string(entry.path()) {
                         let events = analyze_file_diff(entry.path(), None, Some(&content));
                         for event in events {
