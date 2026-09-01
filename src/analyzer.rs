@@ -1,0 +1,250 @@
+use crate::ast::{parse_rust_items, CodeItem, CodeItemKind};
+use crate::models::{EditEvent, EditKind};
+use std::path::Path;
+
+pub fn compare_items(
+    file_path: &Path,
+    old_items: &[CodeItem],
+    new_items: &[CodeItem],
+) -> Vec<EditEvent> {
+    let mut events = Vec::new();
+    let mut matched_old = vec![false; old_items.len()];
+
+    for new_item in new_items {
+        // Match by (kind, name, parent) first, then (kind, name)
+        let match_idx = old_items
+            .iter()
+            .enumerate()
+            .position(|(i, old)| {
+                !matched_old[i]
+                    && old.kind == new_item.kind
+                    && old.name == new_item.name
+                    && old.parent == new_item.parent
+            })
+            .or_else(|| {
+                old_items.iter().enumerate().position(|(i, old)| {
+                    !matched_old[i] && old.kind == new_item.kind && old.name == new_item.name
+                })
+            });
+
+        if let Some(old_idx) = match_idx {
+            matched_old[old_idx] = true;
+            let old_item = &old_items[old_idx];
+            if old_item.tokens != new_item.tokens {
+                let kind = match new_item.kind {
+                    CodeItemKind::Class => EditKind::ClassModified,
+                    CodeItemKind::Function => EditKind::FunctionModified,
+                };
+                events.push(EditEvent {
+                    kind,
+                    symbol: Some(new_item.name.clone()),
+                    file: file_path.to_path_buf(),
+                    line: new_item.line,
+                });
+            }
+        } else {
+            let kind = match new_item.kind {
+                CodeItemKind::Class => EditKind::ClassAdded,
+                CodeItemKind::Function => EditKind::FunctionAdded,
+            };
+            events.push(EditEvent {
+                kind,
+                symbol: Some(new_item.name.clone()),
+                file: file_path.to_path_buf(),
+                line: new_item.line,
+            });
+        }
+    }
+
+    for (old_idx, old_item) in old_items.iter().enumerate() {
+        if !matched_old[old_idx] {
+            let kind = match old_item.kind {
+                CodeItemKind::Class => EditKind::ClassDeleted,
+                CodeItemKind::Function => EditKind::FunctionDeleted,
+            };
+            events.push(EditEvent {
+                kind,
+                symbol: Some(old_item.name.clone()),
+                file: file_path.to_path_buf(),
+                line: old_item.line,
+            });
+        }
+    }
+
+    events
+}
+
+pub fn analyze_file_diff(
+    file_path: &Path,
+    old_content: Option<&str>,
+    new_content: Option<&str>,
+) -> Vec<EditEvent> {
+    let mut events = Vec::new();
+
+    match (old_content, new_content) {
+        (None, Some(new_text)) => {
+            // File Added
+            events.push(EditEvent {
+                kind: EditKind::FileAdded,
+                symbol: None,
+                file: file_path.to_path_buf(),
+                line: None,
+            });
+
+            let items = parse_rust_items(new_text);
+            for item in items {
+                let kind = match item.kind {
+                    CodeItemKind::Class => EditKind::ClassAdded,
+                    CodeItemKind::Function => EditKind::FunctionAdded,
+                };
+                events.push(EditEvent {
+                    kind,
+                    symbol: Some(item.name),
+                    file: file_path.to_path_buf(),
+                    line: item.line,
+                });
+            }
+        }
+        (Some(old_text), None) => {
+            // File Deleted
+            events.push(EditEvent {
+                kind: EditKind::FileDeleted,
+                symbol: None,
+                file: file_path.to_path_buf(),
+                line: None,
+            });
+
+            let items = parse_rust_items(old_text);
+            for item in items {
+                let kind = match item.kind {
+                    CodeItemKind::Class => EditKind::ClassDeleted,
+                    CodeItemKind::Function => EditKind::FunctionDeleted,
+                };
+                events.push(EditEvent {
+                    kind,
+                    symbol: Some(item.name),
+                    file: file_path.to_path_buf(),
+                    line: item.line,
+                });
+            }
+        }
+        (Some(old_text), Some(new_text)) => {
+            // Unchanged check
+            if old_text == new_text {
+                return events;
+            }
+
+            // File Modified
+            events.push(EditEvent {
+                kind: EditKind::FileModified,
+                symbol: None,
+                file: file_path.to_path_buf(),
+                line: None,
+            });
+
+            let old_items = parse_rust_items(old_text);
+            let new_items = parse_rust_items(new_text);
+
+            let item_events = compare_items(file_path, &old_items, &new_items);
+            events.extend(item_events);
+        }
+        (None, None) => {}
+    }
+
+    events
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_analyze_file_diff_add_file() {
+        let code = r#"
+pub struct UserAuth;
+
+impl UserAuth {
+    pub fn login() {}
+    pub fn logout() {}
+}
+"#;
+        let events = analyze_file_diff(Path::new("src/auth.rs"), None, Some(code));
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].kind, EditKind::FileAdded);
+        assert_eq!(events[1].kind, EditKind::ClassAdded);
+        assert_eq!(events[1].symbol.as_deref(), Some("UserAuth"));
+        assert_eq!(events[2].kind, EditKind::FunctionAdded);
+        assert_eq!(events[2].symbol.as_deref(), Some("login"));
+        assert_eq!(events[3].kind, EditKind::FunctionAdded);
+        assert_eq!(events[3].symbol.as_deref(), Some("logout"));
+    }
+
+    #[test]
+    fn test_analyze_file_diff_modify_function() {
+        let old_code = r#"
+pub fn calculate_tax(amount: f64) -> f64 {
+    amount * 0.1
+}
+"#;
+        let new_code = r#"
+pub fn calculate_tax(amount: f64) -> f64 {
+    amount * 0.15
+}
+"#;
+        let events = analyze_file_diff(Path::new("src/billing.rs"), Some(old_code), Some(new_code));
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, EditKind::FileModified);
+        assert_eq!(events[1].kind, EditKind::FunctionModified);
+        assert_eq!(events[1].symbol.as_deref(), Some("calculate_tax"));
+    }
+
+    #[test]
+    fn test_analyze_file_diff_delete_class_and_methods() {
+        let old_code = r#"
+pub struct LegacySession;
+
+impl LegacySession {
+    pub fn init() {}
+    pub fn validate() {}
+    pub fn close() {}
+}
+"#;
+        let new_code = r#"
+// Legacy session removed
+"#;
+        let events = analyze_file_diff(Path::new("src/legacy.rs"), Some(old_code), Some(new_code));
+        assert_eq!(events.len(), 5);
+        assert_eq!(events[0].kind, EditKind::FileModified);
+        assert_eq!(events[1].kind, EditKind::ClassDeleted);
+        assert_eq!(events[1].symbol.as_deref(), Some("LegacySession"));
+        assert_eq!(events[2].kind, EditKind::FunctionDeleted);
+        assert_eq!(events[2].symbol.as_deref(), Some("init"));
+        assert_eq!(events[3].kind, EditKind::FunctionDeleted);
+        assert_eq!(events[3].symbol.as_deref(), Some("validate"));
+        assert_eq!(events[4].kind, EditKind::FunctionDeleted);
+        assert_eq!(events[4].symbol.as_deref(), Some("close"));
+    }
+
+    #[test]
+    fn test_analyze_file_diff_delete_file() {
+        let old_code = r#"
+pub struct OldWidget;
+
+pub fn draw_widget() {}
+"#;
+        let events = analyze_file_diff(Path::new("src/old_widget.rs"), Some(old_code), None);
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].kind, EditKind::FileDeleted);
+        assert_eq!(events[1].kind, EditKind::ClassDeleted);
+        assert_eq!(events[1].symbol.as_deref(), Some("OldWidget"));
+        assert_eq!(events[2].kind, EditKind::FunctionDeleted);
+        assert_eq!(events[2].symbol.as_deref(), Some("draw_widget"));
+    }
+
+    #[test]
+    fn test_unchanged_file_returns_no_events() {
+        let code = "pub fn foo() {}";
+        let events = analyze_file_diff(Path::new("src/lib.rs"), Some(code), Some(code));
+        assert!(events.is_empty());
+    }
+}
