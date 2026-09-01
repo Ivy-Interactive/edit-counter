@@ -1,4 +1,4 @@
-use edit_counter::{diff_repository, EditKind};
+use edit_counter::{diff_repository, DiffConfig, EditKind};
 use git2::{Commit, Oid, Repository, Signature};
 use std::fs;
 use std::path::Path;
@@ -19,35 +19,36 @@ fn init_test_repo() -> (TempDir, Repository) {
     (temp_dir, repo)
 }
 
-fn commit_file(
+fn commit_files(
     repo: &Repository,
-    rel_path: &str,
-    content: Option<&str>,
+    files: &[(&str, Option<&str>)],
     msg: &str,
     parents: &[&Commit],
 ) -> Oid {
     let workdir = repo.workdir().expect("Repo has no workdir");
-    let full_path = workdir.join(rel_path);
 
-    if let Some(c) = content {
-        if let Some(parent) = full_path.parent() {
-            fs::create_dir_all(parent).expect("Failed to create parent dirs");
+    for (rel_path, content) in files {
+        let full_path = workdir.join(rel_path);
+        if let Some(c) = content {
+            if let Some(parent) = full_path.parent() {
+                fs::create_dir_all(parent).expect("Failed to create parent dirs");
+            }
+            fs::write(&full_path, c).expect("Failed to write file");
+            let mut index = repo.index().expect("Failed to get index");
+            index
+                .add_path(Path::new(rel_path))
+                .expect("Failed to add path to index");
+            index.write().expect("Failed to write index");
+        } else {
+            if full_path.exists() {
+                fs::remove_file(&full_path).expect("Failed to remove file");
+            }
+            let mut index = repo.index().expect("Failed to get index");
+            index
+                .remove_path(Path::new(rel_path))
+                .expect("Failed to remove path from index");
+            index.write().expect("Failed to write index");
         }
-        fs::write(&full_path, c).expect("Failed to write file");
-        let mut index = repo.index().expect("Failed to get index");
-        index
-            .add_path(Path::new(rel_path))
-            .expect("Failed to add path to index");
-        index.write().expect("Failed to write index");
-    } else {
-        if full_path.exists() {
-            fs::remove_file(&full_path).expect("Failed to remove file");
-        }
-        let mut index = repo.index().expect("Failed to get index");
-        index
-            .remove_path(Path::new(rel_path))
-            .expect("Failed to remove path from index");
-        index.write().expect("Failed to write index");
     }
 
     let mut index = repo.index().expect("Failed to get index");
@@ -57,6 +58,16 @@ fn commit_file(
     let sig = Signature::now("Test User", "test@example.com").expect("Failed to create signature");
     repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, parents)
         .expect("Failed to commit")
+}
+
+fn commit_file(
+    repo: &Repository,
+    rel_path: &str,
+    content: Option<&str>,
+    msg: &str,
+    parents: &[&Commit],
+) -> Oid {
+    commit_files(repo, &[(rel_path, content)], msg, parents)
 }
 
 #[test]
@@ -93,7 +104,7 @@ impl UserAuth {
         &[&c1],
     );
 
-    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()))
+    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()), None)
         .expect("diff_repository failed");
 
     assert_eq!(report.total_edits, 4);
@@ -141,7 +152,7 @@ pub fn calculate_tax(amount: f64) -> f64 {
         &[&c1],
     );
 
-    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()))
+    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()), None)
         .expect("diff_repository failed");
 
     assert_eq!(report.total_edits, 2);
@@ -189,7 +200,7 @@ impl LegacySession {
         &[&c1],
     );
 
-    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()))
+    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()), None)
         .expect("diff_repository failed");
 
     assert_eq!(report.total_edits, 5);
@@ -232,7 +243,7 @@ pub fn draw_widget() {}
         &[&c1],
     );
 
-    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()))
+    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()), None)
         .expect("diff_repository failed");
 
     assert_eq!(report.total_edits, 3);
@@ -246,4 +257,137 @@ pub fn draw_widget() {}
     assert_eq!(report.events[1].symbol.as_deref(), Some("OldWidget"));
     assert_eq!(report.events[2].kind, EditKind::FunctionDeleted);
     assert_eq!(report.events[2].symbol.as_deref(), Some("draw_widget"));
+}
+
+#[test]
+fn test_git_diff_rename_detection_tracks_modifications() {
+    let (_tmp, repo) = init_test_repo();
+
+    let initial_auth = r#"
+pub struct UserAuth {
+    pub username: String,
+}
+
+impl UserAuth {
+    pub fn login(&self) -> bool {
+        true
+    }
+
+    pub fn logout(&self) {}
+}
+"#;
+    let c1_oid = commit_file(
+        &repo,
+        "src/old_auth.rs",
+        Some(initial_auth),
+        "Initial auth module",
+        &[],
+    );
+    let c1 = repo.find_commit(c1_oid).expect("Find c1");
+
+    // Remove old_auth.rs and create new_auth.rs with modified login method in a single commit
+    let renamed_auth = r#"
+pub struct UserAuth {
+    pub username: String,
+}
+
+impl UserAuth {
+    pub fn login(&self) -> bool {
+        false
+    }
+
+    pub fn logout(&self) {}
+}
+"#;
+    let c2_oid = commit_files(
+        &repo,
+        &[
+            ("src/old_auth.rs", None),
+            ("src/new_auth.rs", Some(renamed_auth)),
+        ],
+        "Rename and update auth module",
+        &[&c1],
+    );
+
+    // Test without rename detection: treated as separate delete and add
+    let default_report =
+        diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()), None)
+            .expect("diff without renames");
+    assert_eq!(default_report.files_deleted, 1);
+    assert_eq!(default_report.files_added, 1);
+
+    // Test with rename detection: identifies rename and tracks FunctionModified
+    let rename_config = DiffConfig {
+        find_renames: true,
+        rename_threshold: Some(50),
+        ignore_patterns: vec![],
+    };
+
+    let rename_report = diff_repository(
+        &repo,
+        &c1_oid.to_string(),
+        Some(&c2_oid.to_string()),
+        Some(&rename_config),
+    )
+    .expect("diff with renames");
+
+    assert_eq!(rename_report.total_edits, 2);
+    assert_eq!(rename_report.files_modified, 1);
+    assert_eq!(rename_report.files_added, 0);
+    assert_eq!(rename_report.files_deleted, 0);
+    assert_eq!(rename_report.functions_modified, 1);
+    assert_eq!(rename_report.events[0].kind, EditKind::FileModified);
+    assert_eq!(rename_report.events[1].kind, EditKind::FunctionModified);
+    assert_eq!(rename_report.events[1].symbol.as_deref(), Some("login"));
+}
+
+#[test]
+fn test_git_diff_ignore_filters_exclude_vendored_and_generated_files() {
+    let (_tmp, repo) = init_test_repo();
+
+    let c1_oid = commit_file(
+        &repo,
+        "README.md",
+        Some("# Test Repo"),
+        "Initial commit",
+        &[],
+    );
+    let c1 = repo.find_commit(c1_oid).expect("Find c1");
+
+    let app_code = "pub fn run() {}\n";
+    let vendor_code = "pub fn vendored_fn() {}\n";
+    let proto_code = "pub struct GeneratedData;\n";
+
+    let c2_oid = commit_files(
+        &repo,
+        &[
+            ("src/app.rs", Some(app_code)),
+            ("vendor/dep.rs", Some(vendor_code)),
+            ("src/proto.generated.rs", Some(proto_code)),
+        ],
+        "Add multiple files",
+        &[&c1],
+    );
+
+    let ignore_config = DiffConfig {
+        find_renames: false,
+        rename_threshold: None,
+        ignore_patterns: vec!["vendor/*".to_string(), "*.generated.rs".to_string()],
+    };
+
+    let report = diff_repository(
+        &repo,
+        &c1_oid.to_string(),
+        Some(&c2_oid.to_string()),
+        Some(&ignore_config),
+    )
+    .expect("diff with ignore");
+
+    // Only src/app.rs should be analyzed (1 FileAdded + 1 FunctionAdded)
+    assert_eq!(report.total_edits, 2);
+    assert_eq!(report.files_added, 1);
+    assert_eq!(report.functions_added, 1);
+    assert_eq!(report.events[0].kind, EditKind::FileAdded);
+    assert_eq!(report.events[1].kind, EditKind::FunctionAdded);
+    assert_eq!(report.events[1].symbol.as_deref(), Some("run"));
 }
