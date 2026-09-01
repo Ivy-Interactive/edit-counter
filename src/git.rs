@@ -249,12 +249,15 @@ pub fn analyze_paths(
             }
         }
         if p.is_dir() {
-            for entry in walkdir::WalkDir::new(p).into_iter().filter_map(|e| e.ok()) {
+            let walker = walkdir::WalkDir::new(p).into_iter().filter_entry(|entry| {
                 if let Some(cfg) = config {
                     if cfg.should_ignore(entry.path()) {
-                        continue;
+                        return false;
                     }
                 }
+                true
+            });
+            for entry in walker.filter_map(|e| e.ok()) {
                 if entry.file_type().is_file() && is_supported_file(entry.path()) {
                     if let Ok(content) = std::fs::read_to_string(entry.path()) {
                         let events = analyze_file_diff(entry.path(), None, Some(&content));
@@ -386,5 +389,49 @@ mod tests {
         assert_eq!(report.files_added, 2);
         assert_eq!(report.functions_added, 2);
         assert_eq!(report.total_edits, 4);
+    }
+
+    #[test]
+    fn test_analyze_paths_prunes_ignored_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        let src_dir = root.join("src");
+        let node_modules_nested = root.join("node_modules").join("package").join("lib");
+        let target_dir_nested = root.join("target").join("debug").join("build");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&node_modules_nested).unwrap();
+        std::fs::create_dir_all(&target_dir_nested).unwrap();
+
+        let main_file = src_dir.join("main.rs");
+        let nm_file = node_modules_nested.join("index.js");
+        let target_file = target_dir_nested.join("output.rs");
+
+        std::fs::write(&main_file, "fn main() {}\n").unwrap();
+        std::fs::write(&nm_file, "function helper() {}\n").unwrap();
+        std::fs::write(&target_file, "fn generated() {}\n").unwrap();
+
+        let config = DiffConfig {
+            find_renames: false,
+            rename_threshold: None,
+            ignore_patterns: vec!["node_modules/".to_string(), "target".to_string()],
+        };
+
+        let report = analyze_paths(&[root.to_path_buf()], Some(&config)).unwrap();
+        assert_eq!(report.files_added, 1);
+        assert_eq!(report.functions_added, 1);
+        assert_eq!(report.total_edits, 2);
+        assert!(report
+            .events
+            .iter()
+            .any(|e| e.symbol.as_deref() == Some("main")));
+        assert!(!report
+            .events
+            .iter()
+            .any(|e| e.symbol.as_deref() == Some("helper")));
+        assert!(!report
+            .events
+            .iter()
+            .any(|e| e.symbol.as_deref() == Some("generated")));
     }
 }
