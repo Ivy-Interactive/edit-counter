@@ -81,7 +81,7 @@ fn main() {
             } else {
                 paths.clone()
             };
-            match analyze_paths(&target_paths) {
+            match analyze_paths(&target_paths, Some(&diff_config)) {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("Error analyzing paths: {}", e);

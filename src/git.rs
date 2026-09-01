@@ -237,11 +237,24 @@ fn is_supported_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-pub fn analyze_paths(paths: &[PathBuf]) -> Result<EditReport, Box<dyn Error>> {
+pub fn analyze_paths(
+    paths: &[PathBuf],
+    config: Option<&DiffConfig>,
+) -> Result<EditReport, Box<dyn Error>> {
     let mut report = EditReport::default();
     for p in paths {
+        if let Some(cfg) = config {
+            if cfg.should_ignore(p) {
+                continue;
+            }
+        }
         if p.is_dir() {
             for entry in walkdir::WalkDir::new(p).into_iter().filter_map(|e| e.ok()) {
+                if let Some(cfg) = config {
+                    if cfg.should_ignore(entry.path()) {
+                        continue;
+                    }
+                }
                 if entry.file_type().is_file() && is_supported_file(entry.path()) {
                     if let Ok(content) = std::fs::read_to_string(entry.path()) {
                         let events = analyze_file_diff(entry.path(), None, Some(&content));
@@ -311,5 +324,67 @@ mod tests {
     fn test_diff_config_empty_does_not_ignore() {
         let config = DiffConfig::default();
         assert!(!config.should_ignore(Path::new("src/main.rs")));
+    }
+
+    #[test]
+    fn test_analyze_paths_with_ignore_patterns() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        let src_dir = root.join("src");
+        let vendor_dir = root.join("vendor");
+        let target_dir = root.join("target");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&vendor_dir).unwrap();
+        std::fs::create_dir_all(&target_dir).unwrap();
+
+        let main_file = src_dir.join("main.rs");
+        let vendor_file = vendor_dir.join("dep.rs");
+        let min_file = target_dir.join("bundle.min.js");
+
+        std::fs::write(&main_file, "fn main() {}\n").unwrap();
+        std::fs::write(&vendor_file, "pub fn vendor_fn() {}\n").unwrap();
+        std::fs::write(&min_file, "function min() {}\n").unwrap();
+
+        let config = DiffConfig {
+            find_renames: false,
+            rename_threshold: None,
+            ignore_patterns: vec!["vendor/".to_string(), "*.min.js".to_string()],
+        };
+
+        let report = analyze_paths(&[root.to_path_buf()], Some(&config)).unwrap();
+        assert_eq!(report.files_added, 1);
+        assert_eq!(report.functions_added, 1);
+        assert_eq!(report.total_edits, 2);
+        assert!(report
+            .events
+            .iter()
+            .any(|e| e.symbol.as_deref() == Some("main")));
+        assert!(!report
+            .events
+            .iter()
+            .any(|e| e.symbol.as_deref() == Some("vendor_fn")));
+    }
+
+    #[test]
+    fn test_analyze_paths_none_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        let src_dir = root.join("src");
+        let vendor_dir = root.join("vendor");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&vendor_dir).unwrap();
+
+        let main_file = src_dir.join("main.rs");
+        let vendor_file = vendor_dir.join("dep.rs");
+
+        std::fs::write(&main_file, "fn main() {}\n").unwrap();
+        std::fs::write(&vendor_file, "pub fn vendor_fn() {}\n").unwrap();
+
+        let report = analyze_paths(&[root.to_path_buf()], None).unwrap();
+        assert_eq!(report.files_added, 2);
+        assert_eq!(report.functions_added, 2);
+        assert_eq!(report.total_edits, 4);
     }
 }
