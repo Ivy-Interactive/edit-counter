@@ -521,3 +521,113 @@ const check = () => true;
     assert_eq!(report.functions_added, 2);
     assert_eq!(report.total_edits, 4);
 }
+
+#[test]
+fn test_git_diff_go_feature() {
+    let (_tmp, repo) = init_test_repo();
+
+    let c1_oid = commit_file(
+        &repo,
+        "go.mod",
+        Some("module example.com/pkg\n\ngo 1.21\n"),
+        "Initial",
+        &[],
+    );
+    let c1 = repo.find_commit(c1_oid).expect("Find c1");
+
+    let go_code = r#"
+package pkg
+
+type Client struct {
+    endpoint string
+}
+
+func (c *Client) Call() error {
+    return nil
+}
+
+func NewClient(ep string) *Client {
+    return &Client{endpoint: ep}
+}
+"#;
+    let c2_oid = commit_file(&repo, "client.go", Some(go_code), "Add client", &[&c1]);
+
+    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()), None)
+        .expect("diff_repository failed");
+
+    assert_eq!(report.files_added, 1);
+    assert_eq!(report.classes_added, 1);
+    assert_eq!(report.functions_added, 2);
+    assert_eq!(report.total_edits, 4);
+}
+
+#[test]
+fn test_git_diff_java_feature() {
+    let (_tmp, repo) = init_test_repo();
+
+    let c1_oid = commit_file(
+        &repo,
+        "pom.xml",
+        Some("<project></project>"),
+        "Initial",
+        &[],
+    );
+    let c1 = repo.find_commit(c1_oid).expect("Find c1");
+
+    let java_code = r#"
+package com.app;
+
+public class Cache {
+    public Cache() {}
+    public void set(String k, String v) {}
+}
+"#;
+    let c2_oid = commit_file(
+        &repo,
+        "src/Cache.java",
+        Some(java_code),
+        "Add cache",
+        &[&c1],
+    );
+
+    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()), None)
+        .expect("diff_repository failed");
+
+    assert_eq!(report.files_added, 1);
+    assert_eq!(report.classes_added, 1);
+    assert_eq!(report.functions_added, 2);
+    assert_eq!(report.total_edits, 4);
+}
+
+#[test]
+fn test_git_diff_cpp_feature() {
+    let (_tmp, repo) = init_test_repo();
+
+    let c1_oid = commit_file(
+        &repo,
+        "CMakeLists.txt",
+        Some("cmake_minimum_required(VERSION 3.10)"),
+        "Initial",
+        &[],
+    );
+    let c1 = repo.find_commit(c1_oid).expect("Find c1");
+
+    let cpp_code = r#"
+class Buffer {
+    int capacity;
+public:
+    void clear() {}
+};
+
+int helper() { return 0; }
+"#;
+    let c2_oid = commit_file(&repo, "buffer.cpp", Some(cpp_code), "Add buffer", &[&c1]);
+
+    let report = diff_repository(&repo, &c1_oid.to_string(), Some(&c2_oid.to_string()), None)
+        .expect("diff_repository failed");
+
+    assert_eq!(report.files_added, 1);
+    assert_eq!(report.classes_added, 1);
+    assert_eq!(report.functions_added, 2);
+    assert_eq!(report.total_edits, 4);
+}

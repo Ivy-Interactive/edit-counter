@@ -312,4 +312,109 @@ public class PaymentGateway
         assert_eq!(events[2].kind, EditKind::FunctionAdded);
         assert_eq!(events[2].symbol.as_deref(), Some("Charge"));
     }
+
+    #[test]
+    fn test_analyze_go_file_diff() {
+        let old_go = r#"
+package server
+
+type Server struct {
+    port int
+}
+
+func (s *Server) Start() {
+    println("start")
+}
+
+func Helper() {}
+"#;
+        let new_go = r#"
+package server
+
+type Server struct {
+    port int
+    host string
+}
+
+func (s *Server) Start() {
+    println("start v2")
+}
+
+type Router struct {}
+"#;
+        let events = analyze_file_diff(Path::new("pkg/server.go"), Some(old_go), Some(new_go));
+        assert_eq!(events.len(), 5);
+        assert_eq!(events[0].kind, EditKind::FileModified);
+        assert_eq!(events[1].kind, EditKind::ClassModified);
+        assert_eq!(events[1].symbol.as_deref(), Some("Server"));
+        assert_eq!(events[2].kind, EditKind::FunctionModified);
+        assert_eq!(events[2].symbol.as_deref(), Some("Start"));
+        assert_eq!(events[3].kind, EditKind::ClassAdded);
+        assert_eq!(events[3].symbol.as_deref(), Some("Router"));
+        assert_eq!(events[4].kind, EditKind::FunctionDeleted);
+        assert_eq!(events[4].symbol.as_deref(), Some("Helper"));
+    }
+
+    #[test]
+    fn test_analyze_java_file_diff() {
+        let old_java = r#"
+public class PaymentProcessor {
+    private int timeout = 10;
+
+    public void process() {
+        System.out.println("processing");
+    }
+}
+"#;
+        let new_java = r#"
+public class PaymentProcessor {
+    private int timeout = 30;
+
+    public void process() {
+        System.out.println("processing v2");
+    }
+}
+"#;
+        let events = analyze_file_diff(
+            Path::new("src/PaymentProcessor.java"),
+            Some(old_java),
+            Some(new_java),
+        );
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].kind, EditKind::FileModified);
+        assert_eq!(events[1].kind, EditKind::ClassModified);
+        assert_eq!(events[1].symbol.as_deref(), Some("PaymentProcessor"));
+        assert_eq!(events[2].kind, EditKind::FunctionModified);
+        assert_eq!(events[2].symbol.as_deref(), Some("process"));
+    }
+
+    #[test]
+    fn test_analyze_cpp_file_diff() {
+        let old_cpp = r#"
+class Engine {
+    int horsepower;
+public:
+    void start() {
+        init();
+    }
+};
+"#;
+        let new_cpp = r#"
+class Engine {
+    int horsepower;
+    int torque;
+public:
+    void start() {
+        init_v2();
+    }
+};
+"#;
+        let events = analyze_file_diff(Path::new("src/engine.cpp"), Some(old_cpp), Some(new_cpp));
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].kind, EditKind::FileModified);
+        assert_eq!(events[1].kind, EditKind::ClassModified);
+        assert_eq!(events[1].symbol.as_deref(), Some("Engine"));
+        assert_eq!(events[2].kind, EditKind::FunctionModified);
+        assert_eq!(events[2].symbol.as_deref(), Some("start"));
+    }
 }
