@@ -40,6 +40,9 @@ pub fn parse_items(extension: &str, source: &str) -> Vec<CodeItem> {
         "java" => parse_java_items(source),
         "c" | "h" => parse_c_items(source),
         "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" => parse_cpp_items(source),
+        "rb" | "rake" | "gemspec" | "ru" => parse_ruby_items(source),
+        "php" | "phtml" => parse_php_items(source),
+        "swift" => parse_swift_items(source),
         _ => Vec::new(),
     }
 }
@@ -202,6 +205,13 @@ where
                 | "record_declaration"
                 | "namespace_definition"
                 | "type_declaration"
+                | "class"
+                | "module"
+                | "singleton_class"
+                | "trait_declaration"
+                | "protocol_declaration"
+                | "actor_declaration"
+                | "extension_declaration"
         ) {
             collect_method_ranges(child, is_method, out);
         }
@@ -245,6 +255,21 @@ fn is_c_method(kind: &str) -> bool {
 
 fn is_cpp_method(kind: &str) -> bool {
     matches!(kind, "function_definition")
+}
+
+fn is_ruby_method(kind: &str) -> bool {
+    matches!(kind, "method" | "singleton_method")
+}
+
+fn is_php_method(kind: &str) -> bool {
+    matches!(kind, "method_declaration")
+}
+
+fn is_swift_method(kind: &str) -> bool {
+    matches!(
+        kind,
+        "function_declaration" | "init_declaration" | "deinit_declaration"
+    )
 }
 
 pub fn parse_typescript_items(source: &str, is_tsx: bool) -> Vec<CodeItem> {
@@ -1053,6 +1078,313 @@ fn visit_cpp_node(node: Node, source: &str, parent_class: Option<&str>, out: &mu
     }
 }
 
+pub fn parse_ruby_items(source: &str) -> Vec<CodeItem> {
+    let language: Language = tree_sitter_ruby::LANGUAGE.into();
+    parse_tree_sitter_ast(language, source, |root, src, out| {
+        visit_ruby_node(root, src, None, out);
+    })
+}
+
+fn visit_ruby_node(node: Node, source: &str, parent_class: Option<&str>, out: &mut Vec<CodeItem>) {
+    match node.kind() {
+        "class" | "module" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = &source[name_node.byte_range()];
+                if !name.is_empty() {
+                    out.push(CodeItem {
+                        name: name.to_string(),
+                        kind: CodeItemKind::Class,
+                        line: Some(node.start_position().row + 1),
+                        tokens: extract_class_tokens(node, source, is_ruby_method),
+                        parent: parent_class.map(String::from),
+                    });
+                    if let Some(body) = node.child_by_field_name("body") {
+                        let mut cursor = body.walk();
+                        for child in body.children(&mut cursor) {
+                            visit_ruby_node(child, source, Some(name), out);
+                        }
+                    } else {
+                        let mut cursor = node.walk();
+                        for child in node.children(&mut cursor) {
+                            if child.id() != name_node.id() {
+                                visit_ruby_node(child, source, Some(name), out);
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+        "singleton_class" => {
+            let name = if let Some(val_node) = node.child_by_field_name("value") {
+                &source[val_node.byte_range()]
+            } else {
+                "self"
+            };
+            out.push(CodeItem {
+                name: name.to_string(),
+                kind: CodeItemKind::Class,
+                line: Some(node.start_position().row + 1),
+                tokens: extract_class_tokens(node, source, is_ruby_method),
+                parent: parent_class.map(String::from),
+            });
+            if let Some(body) = node.child_by_field_name("body") {
+                let mut cursor = body.walk();
+                for child in body.children(&mut cursor) {
+                    visit_ruby_node(child, source, Some(name), out);
+                }
+            } else {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    visit_ruby_node(child, source, Some(name), out);
+                }
+            }
+            return;
+        }
+        "method" | "singleton_method" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = &source[name_node.byte_range()];
+                out.push(CodeItem {
+                    name: name.to_string(),
+                    kind: CodeItemKind::Function,
+                    line: Some(node.start_position().row + 1),
+                    tokens: source[node.byte_range()].to_string(),
+                    parent: parent_class.map(String::from),
+                });
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut cursor = body.walk();
+                    for child in body.children(&mut cursor) {
+                        visit_ruby_node(child, source, parent_class, out);
+                    }
+                }
+                return;
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        visit_ruby_node(child, source, parent_class, out);
+    }
+}
+
+pub fn parse_php_items(source: &str) -> Vec<CodeItem> {
+    let language: Language = tree_sitter_php::LANGUAGE_PHP.into();
+    parse_tree_sitter_ast(language, source, |root, src, out| {
+        visit_php_node(root, src, None, out);
+    })
+}
+
+fn visit_php_node(node: Node, source: &str, parent_class: Option<&str>, out: &mut Vec<CodeItem>) {
+    match node.kind() {
+        "class_declaration"
+        | "interface_declaration"
+        | "trait_declaration"
+        | "enum_declaration" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = &source[name_node.byte_range()];
+                out.push(CodeItem {
+                    name: name.to_string(),
+                    kind: CodeItemKind::Class,
+                    line: Some(node.start_position().row + 1),
+                    tokens: extract_class_tokens(node, source, is_php_method),
+                    parent: parent_class.map(String::from),
+                });
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut cursor = body.walk();
+                    for child in body.children(&mut cursor) {
+                        visit_php_node(child, source, Some(name), out);
+                    }
+                } else {
+                    let mut cursor = node.walk();
+                    for child in node.children(&mut cursor) {
+                        if child.id() != name_node.id() {
+                            visit_php_node(child, source, Some(name), out);
+                        }
+                    }
+                }
+                return;
+            }
+        }
+        "function_definition" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = &source[name_node.byte_range()];
+                out.push(CodeItem {
+                    name: name.to_string(),
+                    kind: CodeItemKind::Function,
+                    line: Some(node.start_position().row + 1),
+                    tokens: source[node.byte_range()].to_string(),
+                    parent: None,
+                });
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut cursor = body.walk();
+                    for child in body.children(&mut cursor) {
+                        visit_php_node(child, source, None, out);
+                    }
+                }
+                return;
+            }
+        }
+        "method_declaration" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                let name = &source[name_node.byte_range()];
+                out.push(CodeItem {
+                    name: name.to_string(),
+                    kind: CodeItemKind::Function,
+                    line: Some(node.start_position().row + 1),
+                    tokens: source[node.byte_range()].to_string(),
+                    parent: parent_class.map(String::from),
+                });
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut cursor = body.walk();
+                    for child in body.children(&mut cursor) {
+                        visit_php_node(child, source, parent_class, out);
+                    }
+                }
+                return;
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        visit_php_node(child, source, parent_class, out);
+    }
+}
+
+fn extract_swift_type_name<'a>(node: Node, source: &'a str) -> Option<&'a str> {
+    if let Some(name_node) = node.child_by_field_name("name") {
+        Some(&source[name_node.byte_range()])
+    } else if let Some(type_node) = node.child_by_field_name("type") {
+        Some(&source[type_node.byte_range()])
+    } else {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "type_identifier"
+                || child.kind() == "user_type"
+                || child.kind() == "simple_identifier"
+                || child.kind() == "identifier"
+            {
+                return Some(&source[child.byte_range()]);
+            }
+        }
+        None
+    }
+}
+
+pub fn parse_swift_items(source: &str) -> Vec<CodeItem> {
+    let language: Language = tree_sitter_swift::LANGUAGE.into();
+    parse_tree_sitter_ast(language, source, |root, src, out| {
+        visit_swift_node(root, src, None, out);
+    })
+}
+
+fn visit_swift_node(node: Node, source: &str, parent_class: Option<&str>, out: &mut Vec<CodeItem>) {
+    match node.kind() {
+        "class_declaration"
+        | "struct_declaration"
+        | "enum_declaration"
+        | "protocol_declaration"
+        | "actor_declaration"
+        | "extension_declaration" => {
+            if let Some(name) = extract_swift_type_name(node, source) {
+                if !name.is_empty() {
+                    out.push(CodeItem {
+                        name: name.to_string(),
+                        kind: CodeItemKind::Class,
+                        line: Some(node.start_position().row + 1),
+                        tokens: extract_class_tokens(node, source, is_swift_method),
+                        parent: parent_class.map(String::from),
+                    });
+                    if let Some(body) = node.child_by_field_name("body") {
+                        let mut cursor = body.walk();
+                        for child in body.children(&mut cursor) {
+                            visit_swift_node(child, source, Some(name), out);
+                        }
+                    } else {
+                        let mut cursor = node.walk();
+                        for child in node.children(&mut cursor) {
+                            visit_swift_node(child, source, Some(name), out);
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+        "function_declaration" => {
+            let name_opt = node
+                .child_by_field_name("name")
+                .map(|n| &source[n.byte_range()])
+                .or_else(|| {
+                    let mut cursor = node.walk();
+                    for child in node.children(&mut cursor) {
+                        if child.kind() == "simple_identifier" || child.kind() == "identifier" {
+                            return Some(&source[child.byte_range()]);
+                        }
+                    }
+                    None
+                });
+
+            if let Some(name) = name_opt {
+                out.push(CodeItem {
+                    name: name.to_string(),
+                    kind: CodeItemKind::Function,
+                    line: Some(node.start_position().row + 1),
+                    tokens: source[node.byte_range()].to_string(),
+                    parent: parent_class.map(String::from),
+                });
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut cursor = body.walk();
+                    for child in body.children(&mut cursor) {
+                        visit_swift_node(child, source, parent_class, out);
+                    }
+                }
+                return;
+            }
+        }
+        "init_declaration" => {
+            out.push(CodeItem {
+                name: "init".to_string(),
+                kind: CodeItemKind::Function,
+                line: Some(node.start_position().row + 1),
+                tokens: source[node.byte_range()].to_string(),
+                parent: parent_class.map(String::from),
+            });
+            if let Some(body) = node.child_by_field_name("body") {
+                let mut cursor = body.walk();
+                for child in body.children(&mut cursor) {
+                    visit_swift_node(child, source, parent_class, out);
+                }
+            }
+            return;
+        }
+        "deinit_declaration" => {
+            out.push(CodeItem {
+                name: "deinit".to_string(),
+                kind: CodeItemKind::Function,
+                line: Some(node.start_position().row + 1),
+                tokens: source[node.byte_range()].to_string(),
+                parent: parent_class.map(String::from),
+            });
+            if let Some(body) = node.child_by_field_name("body") {
+                let mut cursor = body.walk();
+                for child in body.children(&mut cursor) {
+                    visit_swift_node(child, source, parent_class, out);
+                }
+            }
+            return;
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        visit_swift_node(child, source, parent_class, out);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1425,5 +1757,180 @@ int Math::Calculator::subtract(int a, int b) {
         assert_eq!(items[4].name, "subtract");
         assert_eq!(items[4].kind, CodeItemKind::Function);
         assert_eq!(items[4].parent.as_deref(), Some("Calculator"));
+    }
+
+    #[test]
+    fn test_parse_ruby_items() {
+        let ruby_code = r#"
+module Authentication
+  class User
+    def initialize(name)
+      @name = name
+    end
+
+    def self.find_by_name(name)
+      nil
+    end
+
+    def login
+      true
+    end
+  end
+end
+"#;
+        let items = parse_ruby_items(ruby_code);
+        assert_eq!(items.len(), 5);
+
+        assert_eq!(items[0].name, "Authentication");
+        assert_eq!(items[0].kind, CodeItemKind::Class);
+
+        assert_eq!(items[1].name, "User");
+        assert_eq!(items[1].kind, CodeItemKind::Class);
+        assert_eq!(items[1].parent.as_deref(), Some("Authentication"));
+
+        assert_eq!(items[2].name, "initialize");
+        assert_eq!(items[2].kind, CodeItemKind::Function);
+        assert_eq!(items[2].parent.as_deref(), Some("User"));
+
+        assert_eq!(items[3].name, "find_by_name");
+        assert_eq!(items[3].kind, CodeItemKind::Function);
+        assert_eq!(items[3].parent.as_deref(), Some("User"));
+
+        assert_eq!(items[4].name, "login");
+        assert_eq!(items[4].kind, CodeItemKind::Function);
+        assert_eq!(items[4].parent.as_deref(), Some("User"));
+    }
+
+    #[test]
+    fn test_parse_php_items() {
+        let php_code = r#"<?php
+namespace App\Services;
+
+interface LoggerInterface {
+    public function log(string $msg);
+}
+
+trait Loggable {
+    public function logMessage(string $msg) {}
+}
+
+enum Status {
+    case Active;
+    case Inactive;
+}
+
+class UserService implements LoggerInterface {
+    use Loggable;
+
+    public function __construct() {}
+
+    public function log(string $msg) {
+        echo $msg;
+    }
+}
+
+function global_helper() {
+    return true;
+}
+"#;
+        let items = parse_php_items(php_code);
+        assert_eq!(items.len(), 9);
+
+        assert_eq!(items[0].name, "LoggerInterface");
+        assert_eq!(items[0].kind, CodeItemKind::Class);
+
+        assert_eq!(items[1].name, "log");
+        assert_eq!(items[1].kind, CodeItemKind::Function);
+        assert_eq!(items[1].parent.as_deref(), Some("LoggerInterface"));
+
+        assert_eq!(items[2].name, "Loggable");
+        assert_eq!(items[2].kind, CodeItemKind::Class);
+
+        assert_eq!(items[3].name, "logMessage");
+        assert_eq!(items[3].kind, CodeItemKind::Function);
+        assert_eq!(items[3].parent.as_deref(), Some("Loggable"));
+
+        assert_eq!(items[4].name, "Status");
+        assert_eq!(items[4].kind, CodeItemKind::Class);
+
+        assert_eq!(items[5].name, "UserService");
+        assert_eq!(items[5].kind, CodeItemKind::Class);
+
+        assert_eq!(items[6].name, "__construct");
+        assert_eq!(items[6].kind, CodeItemKind::Function);
+        assert_eq!(items[6].parent.as_deref(), Some("UserService"));
+
+        assert_eq!(items[7].name, "log");
+        assert_eq!(items[7].kind, CodeItemKind::Function);
+        assert_eq!(items[7].parent.as_deref(), Some("UserService"));
+
+        assert_eq!(items[8].name, "global_helper");
+        assert_eq!(items[8].kind, CodeItemKind::Function);
+        assert_eq!(items[8].parent, None);
+    }
+
+    #[test]
+    fn test_parse_swift_items() {
+        let swift_code = r#"
+protocol Identifiable {
+    func getId() -> String
+}
+
+actor DataStore {
+    func load() {}
+}
+
+struct Point {
+    var x: Double
+    var y: Double
+    init(x: Double, y: Double) {
+        self.x = x
+        self.y = y
+    }
+}
+
+class UserManager {
+    init() {}
+    deinit() {}
+
+    func fetchUser() -> String {
+        return "admin"
+    }
+}
+"#;
+        let items = parse_swift_items(swift_code);
+        assert_eq!(items.len(), 9);
+
+        assert_eq!(items[0].name, "Identifiable");
+        assert_eq!(items[0].kind, CodeItemKind::Class);
+
+        assert_eq!(items[1].name, "DataStore");
+        assert_eq!(items[1].kind, CodeItemKind::Class);
+
+        assert_eq!(items[2].name, "load");
+        assert_eq!(items[2].kind, CodeItemKind::Function);
+        assert_eq!(items[2].parent.as_deref(), Some("DataStore"));
+
+        assert_eq!(items[3].name, "Point");
+        assert_eq!(items[3].kind, CodeItemKind::Class);
+
+        assert_eq!(items[4].name, "init");
+        assert_eq!(items[4].kind, CodeItemKind::Function);
+        assert_eq!(items[4].parent.as_deref(), Some("Point"));
+
+        assert_eq!(items[5].name, "UserManager");
+        assert_eq!(items[5].kind, CodeItemKind::Class);
+
+        assert_eq!(items[6].name, "init");
+        assert_eq!(items[6].kind, CodeItemKind::Function);
+        assert_eq!(items[6].parent.as_deref(), Some("UserManager"));
+
+        assert_eq!(items[7].name, "deinit");
+        assert_eq!(items[7].kind, CodeItemKind::Function);
+        assert_eq!(items[7].parent.as_deref(), Some("UserManager"));
+
+        assert_eq!(items[8].name, "fetchUser");
+        assert_eq!(items[8].kind, CodeItemKind::Function);
+        assert_eq!(items[8].parent.as_deref(), Some("UserManager"));
     }
 }
